@@ -164,10 +164,13 @@ check('--cat renders a translate entry without an empty ✗ line', () => {
 // ---- packaging -----------------------------------------------------------
 console.log('\npackaging');
 const root = path.join(__dirname, '..');
-check('plugin.json points at hooks.json, which wires both hooks', () => {
+check('hooks/hooks.json wires both hooks, and the manifest does not re-reference it', () => {
   const plugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
-  const hooksFile = path.join(root, plugin.hooks.replace(/^\.\//, ''));
-  const wiring = JSON.parse(fs.readFileSync(hooksFile, 'utf8')).hooks;
+  // hooks/hooks.json is loaded automatically. Naming it in manifest.hooks as well
+  // makes the runtime reject the whole plugin as a duplicate hooks file — and it
+  // fails at load time, after validate/install/details have all reported success.
+  assert.ok(!plugin.hooks, 'manifest.hooks must not point at the auto-loaded hooks/hooks.json');
+  const wiring = JSON.parse(fs.readFileSync(path.join(root, 'hooks/hooks.json'), 'utf8')).hooks;
   assert.ok(wiring.SessionStart && wiring.UserPromptSubmit);
   assert.strictEqual(wiring.SessionStart[0].matcher, 'startup|resume|clear|compact');
   for (const ev of ['SessionStart', 'UserPromptSubmit']) {
