@@ -125,20 +125,29 @@ function envName(key) {
   return 'ENGLISH_COACH_' + key.toUpperCase();
 }
 
+// -> { data, missing?, invalid? }. The three states are kept apart because
+// `status` reports them: a file that is present but unparseable silently loses
+// every setting in it, and a user staring at defaults deserves to know that
+// happened rather than assume their edit did not take.
 function readFileConfig() {
+  let raw;
   try {
     // Strip a UTF-8 BOM; editors on Windows add one and JSON.parse chokes on it.
-    const raw = fs.readFileSync(configPath(), 'utf8').replace(/^﻿/, '');
-    const parsed = JSON.parse(raw);
-    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    raw = fs.readFileSync(configPath(), 'utf8').replace(/^\uFEFF/, '');
   } catch (e) {
-    return {};
+    return { data: {}, missing: true };
   }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { data: parsed };
+  } catch (e) { /* fall through */ }
+  return { data: {}, invalid: true };
 }
 
 // Resolved config plus, for `/english-coach status`, where each value came from.
 function load() {
-  const fileCfg = readFileConfig();
+  const file = readFileConfig();
+  const fileCfg = file.data;
   const cfg = { ...DEFAULTS };
   const source = {};
   for (const key of KEYS) {
@@ -155,6 +164,7 @@ function load() {
   }
   cfg.log_path = expandHome(cfg.log_path) || path.join(configDir(), 'log.jsonl');
   cfg._source = source;
+  cfg._file = { missing: !!file.missing, invalid: !!file.invalid };
   return cfg;
 }
 
@@ -163,7 +173,7 @@ function set(key, raw) {
   if (!r.ok) return r;
   const p = configPath();
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const cfg = readFileConfig();
+  const cfg = readFileConfig().data;
   cfg[key] = r.value;
   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   // An env var of the same name still wins on the next read — say so, or the

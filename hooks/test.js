@@ -111,6 +111,13 @@ check('focus accepts a category list and clears with none', () => {
   assert.ok(config.set('focus', 'none').ok);
   assert.deepStrictEqual(config.load().focus, []);
 });
+check('a BOM-prefixed config file still parses', () => {
+  const cp = config.configPath();
+  const saved = fs.readFileSync(cp, 'utf8');
+  fs.writeFileSync(cp, '\uFEFF' + JSON.stringify({ max_items: 2 }));
+  assert.strictEqual(config.load().max_items, 2);
+  fs.writeFileSync(cp, saved);
+});
 check('a corrupt config file falls back to defaults instead of throwing', () => {
   const p = config.configPath();
   const saved = fs.readFileSync(p, 'utf8');
@@ -188,9 +195,33 @@ check('a prompt merely starting with "english" is not a command', () => {
   assert.ok(!/ENGLISH-COACH STATUS/.test(out), 'word boundary must hold');
 });
 
+check('status reports the config file state, not just its path', () => {
+  const cp = config.configPath();
+  const saved = fs.readFileSync(cp, 'utf8');
+  const ask = () => context(hook('prompt-submit.js', { hook_event_name: 'UserPromptSubmit', prompt: '/english-coach status' }));
+
+  fs.rmSync(cp);
+  assert.match(ask(), /not created yet/, 'a path printed bare reads as "it exists"');
+
+  fs.writeFileSync(cp, '{not json');
+  assert.match(ask(), /PRESENT BUT UNPARSEABLE/, 'a dropped config must not look like a default');
+
+  fs.writeFileSync(cp, saved);
+  assert.match(ask(), /key\(s\) applied/);
+});
+
 // ---- packaging -----------------------------------------------------------
 console.log('\npackaging');
 const root = path.join(__dirname, '..');
+function walkFiles(d = root, out = []) {
+  for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    if (e.name === '.git' || e.name === 'node_modules') continue;
+    const p = path.join(d, e.name);
+    if (e.isDirectory()) walkFiles(p, out);
+    else if (path.basename(p) !== 'test.js') out.push(p); // the assertions live here
+  }
+  return out;
+}
 check('hooks/hooks.json wires both hooks, and the manifest does not re-reference it', () => {
   const plugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
   // hooks/hooks.json is loaded automatically. Naming it in manifest.hooks as well
@@ -223,17 +254,17 @@ check('marketplace.json lists this plugin', () => {
   assert.strictEqual(m.plugins.length, 1);
   assert.strictEqual(m.plugins[0].name, 'english-coach');
 });
+check('no shipped file carries an invisible U+FEFF', () => {
+  // A literal BOM inside a source file is invisible in review and breaks a
+  // shebang or JSON parse if it ever lands at offset 0. Escapes only.
+  for (const f of walkFiles()) {
+    assert.ok(!fs.readFileSync(f, 'utf8').includes('\uFEFF'),
+      `${path.relative(root, f)} contains a literal U+FEFF`);
+  }
+});
 check('nothing ships an absolute home path or an internal name', () => {
-  const files = [];
-  (function walk(d) {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (e.name === '.git' || e.name === 'node_modules') continue;
-      const p = path.join(d, e.name);
-      e.isDirectory() ? walk(p) : files.push(p);
-    }
-  })(root);
   const leak = /\/Users\/|\/home\/[a-z]/;
-  for (const f of files) {
+  for (const f of walkFiles()) {
     if (path.basename(f) === 'test.js') continue; // the sandbox assertions live here
     const body = fs.readFileSync(f, 'utf8');
     assert.ok(!leak.test(body), `${path.relative(root, f)} contains an absolute home path`);

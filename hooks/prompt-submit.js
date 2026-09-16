@@ -75,7 +75,14 @@ function statusText(cfg) {
     const def = Array.isArray(DEFAULTS[k]) ? (DEFAULTS[k].length ? DEFAULTS[k].join(',') : '[]') : DEFAULTS[k];
     lines.push(`  ${k.padEnd(16)} ${String(v).padEnd(42)} [${s[k] || 'default'}]${s[k] === 'default' ? '' : ` default=${def}`}`);
   }
-  lines.push('', `config file: ${configPath()}`, 'resolution: env ENGLISH_COACH_<KEY> > config file > default',
+  // Say what the file is doing, not just where it lives. Printing a bare path
+  // for a file that does not exist invites the reader to assume it does.
+  const f = cfg._file || {};
+  const applied = KEYS.filter(k => s[k] === 'file').length;
+  const state = f.missing ? 'not created yet — a /english-coach <key> <value> writes it'
+    : f.invalid ? 'PRESENT BUT UNPARSEABLE — everything below fell back to env/default'
+    : `${applied} key(s) applied`;
+  lines.push('', `config file: ${configPath()} (${state})`, 'resolution: env ENGLISH_COACH_<KEY> > config file > default',
     'change: /english-coach <key> <value>   ·   tally: /english-coach stats [category]');
   return lines.join('\n');
 }
@@ -116,7 +123,7 @@ function handleCommand(cfg, args) {
 function run(raw) {
   let prompt = '';
   try {
-    prompt = String(JSON.parse(String(raw).replace(/^﻿/, '')).prompt || '');
+    prompt = String(JSON.parse(String(raw).replace(/^\uFEFF/, '')).prompt || '');
   } catch (e) {
     return; // malformed stdin: stay out of the way
   }

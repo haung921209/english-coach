@@ -1,6 +1,6 @@
 {
   "name": "english-coach",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Corrects the English you write in prompts, without ever blocking the work. A deterministic gate decides when it is worth saying something; the ledger tells you when it stopped happening.",
   "author": {
     "name": "haung921209",
