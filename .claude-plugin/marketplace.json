@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "english-coach",
+  "description": "English prompt coaching as a hook: correct what you wrote, keep a pattern ledger, get told when the ledger goes quiet.",
+  "owner": {
+    "name": "haung921209",
+    "url": "https://github.com/haung921209"
+  },
+  "plugins": [
+    {
+      "name": "english-coach",
+      "description": "Corrects the English you write in prompts without blocking the work, logs the pattern, and warns when the log goes stale.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

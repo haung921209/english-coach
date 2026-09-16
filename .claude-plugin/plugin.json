@@ -1,0 +1,13 @@
+{
+  "name": "english-coach",
+  "version": "0.1.0",
+  "description": "Corrects the English you write in prompts, without ever blocking the work. A deterministic gate decides when it is worth saying something; the ledger tells you when it stopped happening.",
+  "author": {
+    "name": "haung921209",
+    "url": "https://github.com/haung921209"
+  },
+  "homepage": "https://github.com/haung921209/english-coach",
+  "license": "MIT",
+  "keywords": ["english", "writing", "language", "hooks", "learning"],
+  "hooks": "./hooks/hooks.json"
+}
