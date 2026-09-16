@@ -84,7 +84,7 @@ Resolution order: **environment variable → config file → default.**
 - Environment: `ENGLISH_COACH_<KEY>`, e.g. `ENGLISH_COACH_STRICTNESS=loose`.
 - File: `$XDG_CONFIG_HOME/english-coach/config.json`, falling back to
   `~/.config/english-coach/config.json` (`%APPDATA%\english-coach\` on Windows).
-- In a session: `/english <key> <value>` — writes the file.
+- In a session: `/english-coach <key> <value>` — writes the file.
 
 | key | values | default | what changes |
 |---|---|---|---|
@@ -152,8 +152,8 @@ A fresh install starts at zero entries.
 ### Reading it
 
 ```bash
-/english stats                  # category frequency, most-missed first
-/english stats modal            # the minimal pairs in one category
+/english-coach stats                  # category frequency, most-missed first
+/english-coach stats modal            # the minimal pairs in one category
 node hooks/ledger.js --recent 30    # same tally, straight from a shell
 ```
 
@@ -164,10 +164,10 @@ leaves you with nothing.
 
 | | |
 |---|---|
-| `/english` or `/english status` | every setting, its value, and where it came from |
-| `/english stats [category]` | the tally |
-| `/english <key> <value>` | change a setting, persisted to the config file |
-| `/english on` / `/english off` | the kill switch |
+| `/english-coach` or `/english-coach status` | every setting, its value, and where it came from |
+| `/english-coach stats [category]` | the tally |
+| `/english-coach <key> <value>` | change a setting, persisted to the config file |
+| `/english-coach on` / `/english-coach off` | the kill switch |
 
 Rejected values say why and change nothing. If an environment variable is
 shadowing the key you just set, it tells you that too.
@@ -186,13 +186,13 @@ shadowing the key you just set, it tells you that too.
 .claude-plugin/marketplace.json  marketplace entry
 hooks/hooks.json                 wiring
 hooks/session-start.js           contract + settings + gap alert
-hooks/prompt-submit.js           gate + /english commands
+hooks/prompt-submit.js           gate + /english-coach commands
 hooks/detect.js                  the gate (pure counting)
 hooks/config.js                  env → file → default
 hooks/ledger.js                  read, gap, tally (also a CLI)
 hooks/test.js                    self-check
 skills/english-coach/SKILL.md    the correction contract
-commands/english.md              /english
+commands/english-coach.md              /english-coach
 ```
 
 ```bash

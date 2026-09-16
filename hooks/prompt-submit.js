@@ -3,7 +3,7 @@
 //
 // Runs the gate on every prompt and, when it fires, tells the model exactly
 // what correction to append and where to record it. Also the entry point for
-// `/english ...`, so settings are changeable from inside a session.
+// `/english-coach ...`, so settings are changeable from inside a session.
 //
 // This hook never blocks: it only ever adds context. A language tool that can
 // stall the actual work gets deleted within a week.
@@ -76,7 +76,7 @@ function statusText(cfg) {
     lines.push(`  ${k.padEnd(16)} ${String(v).padEnd(42)} [${s[k] || 'default'}]${s[k] === 'default' ? '' : ` default=${def}`}`);
   }
   lines.push('', `config file: ${configPath()}`, 'resolution: env ENGLISH_COACH_<KEY> > config file > default',
-    'change: /english <key> <value>   ·   tally: /english stats [category]');
+    'change: /english-coach <key> <value>   ·   tally: /english-coach stats [category]');
   return lines.join('\n');
 }
 
@@ -95,7 +95,7 @@ function handleCommand(cfg, args) {
     return `${head2}${warn}\n\n${stats(items, { cat, recent })}\n\nReport this to the user verbatim.`;
   }
 
-  // `/english on` and `/english off` are shorthand for the enabled key — the
+  // `/english-coach on` and `/english-coach off` are shorthand for the enabled key — the
   // kill switch has to be the shortest thing to type.
   const [key, ...vals] = (head === 'on' || head === 'off') ? ['enabled', head] : [head, ...rest];
   if (!KEYS.includes(key)) {
@@ -104,7 +104,7 @@ function handleCommand(cfg, args) {
   if (!vals.length) {
     const cur = Array.isArray(cfg[key]) ? (cfg[key].length ? cfg[key].join(',') : '[]') : cfg[key];
     const allowed = ENUMS[key] ? ` (${ENUMS[key].join('|')})` : '';
-    return `ENGLISH-COACH: ${key} = ${cur}${allowed}. Usage: /english ${key} <value>. Tell the user.`;
+    return `ENGLISH-COACH: ${key} = ${cur}${allowed}. Usage: /english-coach ${key} <value>. Tell the user.`;
   }
   const r = set(key, vals.join(','));
   if (!r.ok) return `ENGLISH-COACH: rejected — ${r.why}. Tell the user; nothing was changed.`;
@@ -123,8 +123,11 @@ function run(raw) {
 
   const cfg = loadConfig();
 
-  // Commands are handled even when disabled, or `/english on` could not reach us.
-  const cmd = prompt.trim().match(/^\/(?:english-coach:)?english\b\s*(.*)$/is);
+  // Commands are handled even when disabled, or `/english-coach on` could not reach us.
+  // The CLI exposes a plugin command as /<plugin>:<command> and, when the command
+  // name starts with the plugin name, a bare alias too. Accept every spelling
+  // rather than betting on which one the user reaches for.
+  const cmd = prompt.trim().match(/^\/(?:english-coach:)?english(?:-coach)?\b\s*(.*)$/is);
   if (cmd) {
     const args = cmd[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
     return emit(handleCommand(cfg, args));

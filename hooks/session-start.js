@@ -53,7 +53,7 @@ function main() {
         `(threshold ${cfg.gap_alert_days}). Either no English prompts happened, or ` +
         `corrections stopped being written. Tell the user this in your first reply; ` +
         `they asked to be told rather than find out months later. Silence with ` +
-        `\`/english gap_alert_days 0\`.`
+        `\`/english-coach gap_alert_days 0\`.`
       );
     }
   }

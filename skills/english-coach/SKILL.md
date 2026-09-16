@@ -1,6 +1,6 @@
 ---
 name: english-coach
-description: The correction contract for English written in prompts. Use when the english-coach hook says a prompt is English (or Korean worth rehearsing in English), or when the user asks about their English patterns, the correction ledger, or /english settings.
+description: The correction contract for English written in prompts. Use when the english-coach hook says a prompt is English (or Korean worth rehearsing in English), or when the user asks about their English patterns, the correction ledger, or /english-coach settings.
 ---
 
 # english-coach
@@ -45,7 +45,7 @@ category — an unbounded vocabulary makes the tally meaningless.
 
 ## Strictness
 
-Set with `/english strictness <value>`; the hook tells you the active level.
+Set with `/english-coach strictness <value>`; the hook tells you the active level.
 
 | | catches | leaves alone |
 |---|---|---|

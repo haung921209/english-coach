@@ -161,6 +161,33 @@ check('--cat renders a translate entry without an empty ✗ line', () => {
   assert.ok(!out.includes('✗'), 'translate has no wrong side');
 });
 
+// ---- commands: spawn the real hook, the way Claude Code does --------------
+console.log('\ncommands');
+const { execFileSync } = require('child_process');
+function hook(script, payload) {
+  return execFileSync(process.execPath, [path.join(__dirname, script)], {
+    input: JSON.stringify(payload),
+    env: { ...process.env, XDG_CONFIG_HOME: sandbox },
+    encoding: 'utf8',
+  });
+}
+function context(out) {
+  if (!out) return '';
+  return JSON.parse(out).hookSpecificOutput.additionalContext;
+}
+// The CLI may hand us any of these spellings; a regex that misses one makes the
+// command silently unreachable, which no manifest check can see.
+for (const spelling of ['/english-coach', '/english-coach status', '/english-coach:english-coach status', '/english status']) {
+  check(`"${spelling}" reaches the handler`, () => {
+    const out = context(hook('prompt-submit.js', { hook_event_name: 'UserPromptSubmit', prompt: spelling }));
+    assert.match(out, /ENGLISH-COACH STATUS/);
+  });
+}
+check('a prompt merely starting with "english" is not a command', () => {
+  const out = context(hook('prompt-submit.js', { hook_event_name: 'UserPromptSubmit', prompt: '/englishx status' }));
+  assert.ok(!/ENGLISH-COACH STATUS/.test(out), 'word boundary must hold');
+});
+
 // ---- packaging -----------------------------------------------------------
 console.log('\npackaging');
 const root = path.join(__dirname, '..');
@@ -178,6 +205,17 @@ check('hooks/hooks.json wires both hooks, and the manifest does not re-reference
       const script = h.command.match(/hooks\/([\w.-]+\.js)/)[1];
       assert.ok(fs.existsSync(path.join(root, 'hooks', script)), `${script} missing`);
     }
+  }
+});
+check('the command file name starts with the plugin name', () => {
+  // Claude Code exposes /<plugin>:<command> always, and a bare /<command> alias
+  // only when the command name starts with the plugin name. commands/english.md
+  // under plugin "english-coach" left /english unreachable — it resolved to
+  // "Unknown command" while every manifest check reported success.
+  const plugin = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin/plugin.json'), 'utf8'));
+  for (const f of fs.readdirSync(path.join(root, 'commands'))) {
+    assert.ok(path.basename(f, '.md').startsWith(plugin.name),
+      `commands/${f} would have no bare alias under plugin "${plugin.name}"`);
   }
 });
 check('marketplace.json lists this plugin', () => {

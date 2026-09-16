@@ -9,7 +9,7 @@
 //   3. DEFAULTS below
 //
 // Defaults are a suggestion, not a contract. Every key is settable with
-// `/english <key> <value>`, which writes the config file.
+// `/english-coach <key> <value>`, which writes the config file.
 
 const fs = require('fs');
 const path = require('path');
@@ -72,7 +72,7 @@ function expandHome(p) {
   return p;
 }
 
-// Coerce one raw value (env string, JSON value, or /english argument) to the
+// Coerce one raw value (env string, JSON value, or /english-coach argument) to the
 // type its key expects. Returns {ok, value} | {ok:false, why}.
 function coerce(key, raw) {
   if (!KEYS.includes(key)) {
@@ -136,7 +136,7 @@ function readFileConfig() {
   }
 }
 
-// Resolved config plus, for `/english status`, where each value came from.
+// Resolved config plus, for `/english-coach status`, where each value came from.
 function load() {
   const fileCfg = readFileConfig();
   const cfg = { ...DEFAULTS };
