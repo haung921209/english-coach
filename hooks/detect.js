@@ -42,7 +42,12 @@ function classify(text, opt = {}) {
   const words = body.match(LATIN_WORD) || [];
   const en = words.reduce((n, w) => n + w.length, 0);
   const ratio = (en + ko) ? en / (en + ko) : 0;
-  const metrics = { en_words: words.length, ko_chars: ko, ratio: Math.round(ratio * 100) / 100 };
+  // Reported at full precision. The prototype rounds for display with Python's
+  // round(), which breaks ties to even where JS Math.round breaks them away from
+  // zero; rounding here would make the two disagree on exact halves for a value
+  // that is only ever read by humans. The verdict below uses full precision in
+  // both implementations, so nothing about the decision changes.
+  const metrics = { en_words: words.length, ko_chars: ko, ratio };
 
   if (words.length >= minWords && ratio >= minRatio) return { verdict: 'correct', metrics };
   if (mixedMode !== 'off' && ko >= mixedMinChars && ratio < minRatio) {
@@ -51,4 +56,4 @@ function classify(text, opt = {}) {
   return { verdict: 'skip', metrics };
 }
 
-module.exports = { classify, stripNoise };
+module.exports = { classify };

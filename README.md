@@ -154,7 +154,8 @@ A fresh install starts at zero entries.
 ```bash
 /english-coach stats                  # category frequency, most-missed first
 /english-coach stats modal            # the minimal pairs in one category
-node hooks/ledger.js --recent 30    # same tally, straight from a shell
+/english-coach stats --recent 30      # the last 30 days only
+node hooks/ledger.js --recent 30      # same tally, straight from a shell
 ```
 
 Drill the top two or three categories. Trying to cover all fourteen evenly

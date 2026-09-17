@@ -1,6 +1,6 @@
 {
   "name": "english-coach",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Claude Code plugin: corrects the English you write in prompts, keeps a pattern ledger, warns when the ledger goes stale.",
   "license": "MIT",
   "keywords": ["claude-code", "claude-code-plugin", "english", "writing", "hooks"],

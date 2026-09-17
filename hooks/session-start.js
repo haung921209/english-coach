@@ -6,7 +6,7 @@
 // that silently stopped running is the failure this plugin exists to prevent.
 
 const { load: loadConfig, configPath } = require('./config');
-const { load: loadLedger, gap } = require('./ledger');
+const { gap, lastDateFromTail } = require('./ledger');
 
 function emit(context) {
   if (!context) return;
@@ -39,13 +39,24 @@ function main() {
     `Ledger: ${cfg.log_path} · config: ${configPath()}`,
   ];
 
-  const { items, broken } = loadLedger(cfg.log_path);
+  // Only the newest date is needed here, so read the tail rather than parsing
+  // a file that grows forever.
+  const { last, exists, readable } = lastDateFromTail(cfg.log_path);
 
   // `output: inline` never writes the ledger, so a gap there is expected, not
   // a defect — warning about it would train the user to ignore the warning.
   if (cfg.output !== 'inline') {
-    const g = gap(items, cfg.gap_alert_days);
-    if (g && g.empty) {
+    const g = gap(last ? [{ date: last }] : [], cfg.gap_alert_days);
+    if (exists && !readable) {
+      // Saying "empty, the first correction creates it" here would be the
+      // opposite of the truth and would send the user looking for a fresh
+      // install instead of a damaged file.
+      lines.push(
+        `LEDGER UNREADABLE: ${cfg.log_path} exists but no entry could be parsed from it. ` +
+        `It may be truncated or half-written. Tell the user; history is at risk and new ` +
+        `appends will not fix it.`
+      );
+    } else if (g && g.empty) {
       lines.push(`NOTE: the ledger is empty. The first correction creates ${cfg.log_path}.`);
     } else if (g) {
       lines.push(
@@ -57,7 +68,7 @@ function main() {
       );
     }
   }
-  if (broken) lines.push(`NOTE: ${broken} unparseable ledger line(s) were skipped.`);
+
 
   lines.push(
     'When a correction is due the UserPromptSubmit hook says so explicitly. ' +

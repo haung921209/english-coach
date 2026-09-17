@@ -10,6 +10,48 @@ const fs = require('fs');
 
 const SCHEMA_VERSION = 'english.pattern.v1';
 
+// The gap check needs only the newest date, but the ledger is append-only and
+// grows for the life of the install; parsing all of it on every session start
+// is unbounded work inside a 5-second hook. Read the tail and scan backwards.
+// -> { last, exists, readable } — `readable` false means bytes were there but
+// no dated line could be found in the tail.
+function lastDateFromTail(logPath, tailBytes = 64 * 1024) {
+  let fd;
+  try {
+    fd = fs.openSync(logPath, 'r');
+  } catch (e) {
+    return { last: null, exists: false, readable: false };
+  }
+  try {
+    const size = fs.fstatSync(fd).size;
+    if (!size) return { last: null, exists: true, readable: true };
+    const length = Math.min(size, tailBytes);
+    const buf = Buffer.alloc(length);
+    fs.readSync(fd, buf, 0, length, size - length);
+    const lines = buf.toString('utf8').split('\n');
+    // A partial first line when the file is longer than the window.
+    if (size > length) lines.shift();
+    let last = null;
+    let parsed = 0;
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const d = String(JSON.parse(t).date || '').slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+          parsed += 1;
+          if (!last || d > last) last = d;
+        }
+      } catch (e) { /* tolerate a bad line, same as load() */ }
+    }
+    return { last, exists: true, readable: parsed > 0 || lines.every(l => !l.trim()) };
+  } catch (e) {
+    return { last: null, exists: true, readable: false };
+  } finally {
+    try { fs.closeSync(fd); } catch (e) { /* best effort */ }
+  }
+}
+
 function load(logPath) {
   let raw;
   try {
@@ -122,7 +164,7 @@ function stats(items, { cat = null, recent = null, today = isoDate() } = {}) {
   return lines.join('\n');
 }
 
-module.exports = { SCHEMA_VERSION, load, stats, gap, lastDate, splitCats, kindOf, isoDate, daysBetween };
+module.exports = { SCHEMA_VERSION, load, stats, gap, lastDateFromTail, kindOf, isoDate };
 
 // Also usable straight from a shell, so the tally is not locked behind a
 // session: `node hooks/ledger.js [--cat modal] [--recent 30]`

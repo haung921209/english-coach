@@ -103,6 +103,15 @@ function coerce(key, raw) {
     const v = String(raw).trim();
     return v ? { ok: true, value: v } : { ok: false, why: 'log_path must not be empty' };
   }
+  // Number(null), Number(false), Number([]) and Number('') are all 0, which
+  // sails through the guards below. A JSON config with `"min_en_words": null`
+  // would set the gate's noise floor to zero and fire on every prompt.
+  if (typeof raw !== 'number' && typeof raw !== 'string') {
+    return { ok: false, why: `${key} must be a number (got ${raw === null ? 'null' : Array.isArray(raw) ? 'an array' : typeof raw})` };
+  }
+  if (typeof raw === 'string' && raw.trim() === '') {
+    return { ok: false, why: `${key} must not be empty` };
+  }
   if (key === 'min_en_ratio') {
     const v = Number(raw);
     if (!Number.isFinite(v) || v < 0 || v > 1) {
@@ -150,6 +159,7 @@ function load() {
   const fileCfg = file.data;
   const cfg = { ...DEFAULTS };
   const source = {};
+  const rejected = [];
   for (const key of KEYS) {
     source[key] = 'default';
     if (Object.prototype.hasOwnProperty.call(fileCfg, key)) {
@@ -160,11 +170,15 @@ function load() {
     if (env !== undefined && env !== '') {
       const r = coerce(key, env);
       if (r.ok) { cfg[key] = r.value; source[key] = 'env'; }
+      // Dropping it silently leaves the user looking at a value they did not
+      // set, with nothing to tell them their variable was thrown away.
+      else rejected.push([envName(key), r.why]);
     }
   }
   cfg.log_path = expandHome(cfg.log_path) || path.join(configDir(), 'log.jsonl');
   cfg._source = source;
-  cfg._file = { missing: !!file.missing, invalid: !!file.invalid };
+  cfg._file = { missing: !!file.missing, invalid: !!file.invalid, keys: Object.keys(fileCfg) };
+  cfg._rejected = rejected;
   return cfg;
 }
 
@@ -173,13 +187,18 @@ function set(key, raw) {
   if (!r.ok) return r;
   const p = configPath();
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const cfg = readFileConfig().data;
+  // An unparseable file still holds the user's settings. Overwriting it with
+  // just this key throws them away, so say so rather than reporting plain
+  // success — the read path already reports this state, the write path did not.
+  const existing = readFileConfig();
+  const cfg = existing.data;
   cfg[key] = r.value;
   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
   // An env var of the same name still wins on the next read — say so, or the
   // user watches a setting "not take" with no explanation.
   const shadowed = process.env[envName(key)] !== undefined && process.env[envName(key)] !== '';
-  return { ok: true, value: r.value, path: p, shadowed: shadowed ? envName(key) : null };
+  return { ok: true, value: r.value, path: p, shadowed: shadowed ? envName(key) : null,
+           replacedUnreadable: !!existing.invalid };
 }
 
-module.exports = { DEFAULTS, ENUMS, CATEGORIES, KEYS, configDir, configPath, coerce, envName, expandHome, load, set };
+module.exports = { DEFAULTS, ENUMS, CATEGORIES, KEYS, configPath, coerce, load, set };

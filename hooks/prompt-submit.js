@@ -6,9 +6,11 @@
 // `/english-coach ...`, so settings are changeable from inside a session.
 //
 // This hook never blocks: it only ever adds context. A language tool that can
-// stall the actual work gets deleted within a week.
+// stall the actual work gets deleted within a week. It also never stays silent
+// about its own failure — silence here is indistinguishable from "the plugin is
+// not installed", which is what the command file tells the model to report.
 
-const { load: loadConfig, configPath, coerce, set, KEYS, CATEGORIES, DEFAULTS, ENUMS } = require('./config');
+const { load: loadConfig, configPath, set, KEYS, CATEGORIES, DEFAULTS, ENUMS } = require('./config');
 const { classify } = require('./detect');
 const { load: loadLedger, stats, isoDate, SCHEMA_VERSION } = require('./ledger');
 
@@ -17,6 +19,12 @@ function emit(context) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context },
   }));
+}
+
+// A config value as a user should read it: lists join, empty list shows as [].
+function show(v) {
+  if (!Array.isArray(v)) return v;
+  return v.length ? v.join(',') : '[]';
 }
 
 const STRICTNESS = {
@@ -39,9 +47,16 @@ function ledgerInstruction(cfg, kind) {
   return `Append one line per item to ${cfg.log_path} (append-only JSONL; create the directory if needed), each exactly this shape: ${shape}`;
 }
 
-function correctionContext(cfg, kind) {
+// `mixed` means the gate measured this prompt as NOT English (ratio below
+// min_en_ratio). Under mixed_mode: correct we still want a correction pass, but
+// the opening line has to say what is actually true — telling the model a
+// Korean prompt "is in English" makes it invent English to correct.
+function correctionContext(cfg, verdict = 'correct') {
+  const opening = verdict === 'mixed'
+    ? 'ENGLISH-COACH: this prompt is mostly not in English, and mixed_mode is set to `correct`. Correct whatever English fragments it does contain; if there are none worth a correction, say nothing about English at all. Do the requested work first and in full.'
+    : 'ENGLISH-COACH: this prompt is in English. Do the requested work first and in full — the correction goes at the very end and never delays or replaces the work.';
   const lines = [
-    'ENGLISH-COACH: this prompt is in English. Do the requested work first and in full — the correction goes at the very end and never delays or replaces the work.',
+    opening,
     `Strictness: ${STRICTNESS[cfg.strictness]}`,
     `At most ${cfg.max_items} item(s). Fewer is better; nothing worth saying means say nothing.`,
     `Format per item: "✗ <original> / ✓ <natural> / <one-line rule>" with the rule written in ${cfg.explain_lang === 'ko' ? 'Korean' : 'English'}.`,
@@ -50,7 +65,7 @@ function correctionContext(cfg, kind) {
     `Routing: ${OUTPUT[cfg.output]}`,
   ];
   if (cfg.focus.length) lines.push(`Focus: report only these categories — ${cfg.focus.join(', ')}. Ignore everything else.`);
-  const led = ledgerInstruction(cfg, kind);
+  const led = ledgerInstruction(cfg, 'correct');
   if (led) lines.push(led);
   return lines.join('\n');
 }
@@ -71,54 +86,105 @@ function statusText(cfg) {
   const s = cfg._source || {};
   const lines = ['ENGLISH-COACH STATUS — report this to the user verbatim.', ''];
   for (const k of KEYS) {
-    const v = Array.isArray(cfg[k]) ? (cfg[k].length ? cfg[k].join(',') : '[]') : cfg[k];
-    const def = Array.isArray(DEFAULTS[k]) ? (DEFAULTS[k].length ? DEFAULTS[k].join(',') : '[]') : DEFAULTS[k];
-    lines.push(`  ${k.padEnd(16)} ${String(v).padEnd(42)} [${s[k] || 'default'}]${s[k] === 'default' ? '' : ` default=${def}`}`);
+    const src = s[k] || 'default';
+    lines.push(`  ${k.padEnd(16)} ${String(show(cfg[k])).padEnd(42)} [${src}]${src === 'default' ? '' : ` default=${show(DEFAULTS[k])}`}`);
+  }
+  // An env var that failed validation is thrown away by load(). Saying nothing
+  // about it leaves the user looking at a value they did not set, with no way
+  // to learn their variable was rejected.
+  for (const [name, why] of cfg._rejected || []) {
+    lines.push(`  !! ${name} was REJECTED and ignored — ${why}`);
   }
   // Say what the file is doing, not just where it lives. Printing a bare path
   // for a file that does not exist invites the reader to assume it does.
   const f = cfg._file || {};
   const applied = KEYS.filter(k => s[k] === 'file').length;
+  const shadowed = KEYS.filter(k => s[k] === 'env' && f.keys && f.keys.includes(k)).length;
   const state = f.missing ? 'not created yet — a /english-coach <key> <value> writes it'
     : f.invalid ? 'PRESENT BUT UNPARSEABLE — everything below fell back to env/default'
-    : `${applied} key(s) applied`;
+    : `${applied} key(s) applied${shadowed ? `, ${shadowed} more shadowed by env` : ''}`;
   lines.push('', `config file: ${configPath()} (${state})`, 'resolution: env ENGLISH_COACH_<KEY> > config file > default',
     'change: /english-coach <key> <value>   ·   tally: /english-coach stats [category]');
   return lines.join('\n');
 }
 
+// `--recent N` has to be pulled out before anything positional is read, or the
+// flag's own argument reads as a category name.
+function parseStatsArgs(rest) {
+  let recent = null;
+  const positional = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] === '--recent') {
+      const raw = rest[i + 1];
+      i += 1;
+      const n = Number(raw);
+      // NaN is falsy, so an unvalidated value here silently prints the whole
+      // history under a heading that promised a window.
+      if (raw === undefined || !Number.isInteger(n) || n < 1) {
+        return { error: `--recent needs a positive whole number of days (got ${raw === undefined ? 'nothing' : `'${raw}'`})` };
+      }
+      recent = n;
+    } else {
+      positional.push(rest[i]);
+    }
+  }
+  return { recent, cat: positional[0] || null };
+}
+
 function handleCommand(cfg, args) {
-  const [head, ...rest] = args;
+  const [rawHead, ...rest] = args;
+  const head = (rawHead || '').toLowerCase();
 
   if (!head || head === 'status') return statusText(cfg);
 
   if (head === 'stats') {
+    const { recent, cat, error } = parseStatsArgs(rest);
+    if (error) return `ENGLISH-COACH: ${error}. Tell the user; nothing was read.`;
     const { items, exists, broken } = loadLedger(cfg.log_path);
-    const cat = rest.find(a => !a.startsWith('--')) || null;
-    const ri = rest.indexOf('--recent');
-    const recent = ri >= 0 && rest[ri + 1] ? Number(rest[ri + 1]) : null;
-    const head2 = exists ? `ENGLISH-COACH STATS — ${cfg.log_path}` : `ENGLISH-COACH STATS — no ledger yet at ${cfg.log_path}`;
+    const title = exists ? `ENGLISH-COACH STATS — ${cfg.log_path}` : `ENGLISH-COACH STATS — no ledger yet at ${cfg.log_path}`;
     const warn = broken ? `\n(${broken} unparseable line(s) skipped)` : '';
-    return `${head2}${warn}\n\n${stats(items, { cat, recent })}\n\nReport this to the user verbatim.`;
+    return `${title}${warn}\n\n${stats(items, { cat: cat ? cat.toLowerCase() : null, recent })}\n\nReport this to the user verbatim.`;
   }
 
-  // `/english-coach on` and `/english-coach off` are shorthand for the enabled key — the
-  // kill switch has to be the shortest thing to type.
-  const [key, ...vals] = (head === 'on' || head === 'off') ? ['enabled', head] : [head, ...rest];
+  // `/english-coach on` and `/english-coach off` are shorthand for the enabled
+  // key — the kill switch has to be the shortest thing to type.
+  const isToggle = head === 'on' || head === 'off';
+  const key = isToggle ? 'enabled' : head;
+  // Only the key is case-folded. Values keep their case and their spaces: a
+  // lowercased log_path points at a directory that does not exist on a
+  // case-sensitive filesystem, and the ledger then stops silently — the exact
+  // failure this plugin exists to catch. coerce() lowercases enum values itself.
+  const value = isToggle ? head : rest.join(' ');
+
   if (!KEYS.includes(key)) {
     return `ENGLISH-COACH: unknown key '${key}'. Valid keys: ${KEYS.join(', ')}. Tell the user.`;
   }
-  if (!vals.length) {
-    const cur = Array.isArray(cfg[key]) ? (cfg[key].length ? cfg[key].join(',') : '[]') : cfg[key];
+  if (!value) {
     const allowed = ENUMS[key] ? ` (${ENUMS[key].join('|')})` : '';
-    return `ENGLISH-COACH: ${key} = ${cur}${allowed}. Usage: /english-coach ${key} <value>. Tell the user.`;
+    return `ENGLISH-COACH: ${key} = ${show(cfg[key])}${allowed}. Usage: /english-coach ${key} <value>. Tell the user.`;
   }
-  const r = set(key, vals.join(','));
+
+  let r;
+  try {
+    r = set(key, value);
+  } catch (e) {
+    // A write can fail on a read-only home, a full disk, or a bad
+    // XDG_CONFIG_HOME. Falling through to the outer catch would emit nothing,
+    // and the command file tells the model that no output means the hooks are
+    // not running — reporting a disk error as a broken install.
+    return `ENGLISH-COACH: could not write ${configPath()} — ${e.message}. Nothing was changed. Tell the user this is a filesystem problem, not a broken install.`;
+  }
   if (!r.ok) return `ENGLISH-COACH: rejected — ${r.why}. Tell the user; nothing was changed.`;
-  const shown = Array.isArray(r.value) ? (r.value.length ? r.value.join(',') : '[]') : r.value;
   const shadow = r.shadowed ? ` WARNING: ${r.shadowed} is set in the environment and still overrides it.` : '';
-  return `ENGLISH-COACH: ${key} = ${shown}, saved to ${r.path}.${shadow} Tell the user, then carry on with whatever else they asked.`;
+  const replaced = r.replacedUnreadable ? ' NOTE: the existing config file was unreadable and has been replaced, so any settings it held are gone.' : '';
+  return `ENGLISH-COACH: ${key} = ${show(r.value)}, saved to ${r.path}.${shadow}${replaced} Tell the user, then carry on with whatever else they asked.`;
 }
+
+// The CLI exposes a plugin command as /<plugin>:<command> and, when the command
+// name starts with the plugin name, a bare alias too. Spell every accepted form
+// out: an optional `-coach` suffix plus \b also matches /english-teacher,
+// because \b is satisfied by the hyphen once the optional group backtracks.
+const COMMAND = /^\/(?:english-coach:english-coach|english-coach:english|english-coach|english)(?=\s|$)\s*(.*)$/is;
 
 function run(raw) {
   let prompt = '';
@@ -131,22 +197,19 @@ function run(raw) {
   const cfg = loadConfig();
 
   // Commands are handled even when disabled, or `/english-coach on` could not reach us.
-  // The CLI exposes a plugin command as /<plugin>:<command> and, when the command
-  // name starts with the plugin name, a bare alias too. Accept every spelling
-  // rather than betting on which one the user reaches for.
-  const cmd = prompt.trim().match(/^\/(?:english-coach:)?english(?:-coach)?\b\s*(.*)$/is);
+  const cmd = prompt.trim().match(COMMAND);
   if (cmd) {
-    const args = cmd[1].trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const args = cmd[1].trim().split(/\s+/).filter(Boolean);
     return emit(handleCommand(cfg, args));
   }
 
   if (cfg.enabled === 'off') return;
 
   const { verdict } = classify(prompt, cfg);
-  if (verdict === 'correct') return emit(correctionContext(cfg, 'correct'));
+  if (verdict === 'correct') return emit(correctionContext(cfg));
   if (verdict === 'mixed') {
     if (cfg.mixed_mode === 'translate') return emit(translateContext(cfg));
-    if (cfg.mixed_mode === 'correct') return emit(correctionContext(cfg, 'correct'));
+    if (cfg.mixed_mode === 'correct') return emit(correctionContext(cfg, 'mixed'));
   }
   // skip: no output, no noise
 }
@@ -158,6 +221,11 @@ function finish() {
   done = true;
   try { run(input); } catch (e) { /* never block the prompt */ }
 }
+// Decode as UTF-8 across chunk boundaries. Without this each Buffer is
+// stringified on its own, so a Hangul syllable split across two pipe writes
+// becomes U+FFFD and the Korean character count — which decides `mixed` — is
+// off by one.
+process.stdin.setEncoding('utf8');
 process.stdin.on('data', c => { input += c; });
 process.stdin.on('end', finish);
 // Never hang a session waiting on stdin that will not close. unref() keeps the

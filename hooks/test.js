@@ -65,7 +65,7 @@ check('mixed_mode off suppresses mixed', () => {
 });
 check('the 0.58 borderline sits below the 0.6 threshold', () => {
   const r = classify('the job 에서 replicate 돌려주고 결과 보여줘');
-  assert.strictEqual(r.metrics.ratio, 0.58);
+  assert.strictEqual(Math.round(r.metrics.ratio * 100) / 100, 0.58);
 });
 
 // ---- config: all three resolution paths ---------------------------------
@@ -114,16 +114,18 @@ check('focus accepts a category list and clears with none', () => {
 check('a BOM-prefixed config file still parses', () => {
   const cp = config.configPath();
   const saved = fs.readFileSync(cp, 'utf8');
-  fs.writeFileSync(cp, '\uFEFF' + JSON.stringify({ max_items: 2 }));
-  assert.strictEqual(config.load().max_items, 2);
-  fs.writeFileSync(cp, saved);
+  try {
+    fs.writeFileSync(cp, '\uFEFF' + JSON.stringify({ max_items: 2 }));
+    assert.strictEqual(config.load().max_items, 2);
+  } finally { fs.writeFileSync(cp, saved); }
 });
 check('a corrupt config file falls back to defaults instead of throwing', () => {
   const p = config.configPath();
   const saved = fs.readFileSync(p, 'utf8');
-  fs.writeFileSync(p, '{not json');
-  assert.strictEqual(config.load().strictness, 'normal');
-  fs.writeFileSync(p, saved);
+  try {
+    fs.writeFileSync(p, '{not json');
+    assert.strictEqual(config.load().strictness, 'normal');
+  } finally { fs.writeFileSync(p, saved); }
 });
 
 // ---- ledger --------------------------------------------------------------
@@ -200,14 +202,195 @@ check('status reports the config file state, not just its path', () => {
   const saved = fs.readFileSync(cp, 'utf8');
   const ask = () => context(hook('prompt-submit.js', { hook_event_name: 'UserPromptSubmit', prompt: '/english-coach status' }));
 
-  fs.rmSync(cp);
-  assert.match(ask(), /not created yet/, 'a path printed bare reads as "it exists"');
-
-  fs.writeFileSync(cp, '{not json');
-  assert.match(ask(), /PRESENT BUT UNPARSEABLE/, 'a dropped config must not look like a default');
-
-  fs.writeFileSync(cp, saved);
+  try {
+    fs.rmSync(cp);
+    assert.match(ask(), /not created yet/, 'a path printed bare reads as "it exists"');
+    fs.writeFileSync(cp, '{not json');
+    assert.match(ask(), /PRESENT BUT UNPARSEABLE/, 'a dropped config must not look like a default');
+  } finally { fs.writeFileSync(cp, saved); }
   assert.match(ask(), /key\(s\) applied/);
+});
+
+// ---- the review's findings, each with the reproduction that found it ------
+console.log('\nregressions');
+const cfgPath = config.configPath();
+function withConfig(body) {
+  const saved = fs.existsSync(cfgPath) ? fs.readFileSync(cfgPath, 'utf8') : null;
+  try { return body(); }
+  finally {
+    if (saved === null) { try { fs.rmSync(cfgPath); } catch (e) {} }
+    else fs.writeFileSync(cfgPath, saved);
+  }
+}
+function cmd(prompt) {
+  return context(hook('prompt-submit.js', { hook_event_name: 'UserPromptSubmit', prompt }));
+}
+
+check('a value keeps its case and its spaces', () => {
+  // Lowercasing a log_path points the ledger at a directory that does not exist
+  // on a case-sensitive filesystem, and it then stops silently — the exact
+  // failure this plugin exists to catch.
+  withConfig(() => {
+    cmd('/english-coach log_path ~/Docs/MyLog.jsonl');
+    assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).log_path, '~/Docs/MyLog.jsonl');
+    cmd('/english-coach log_path ~/My Docs/log.jsonl');
+    assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).log_path, '~/My Docs/log.jsonl');
+  });
+});
+check('an enum value is still case-insensitive', () => {
+  withConfig(() => {
+    cmd('/english-coach strictness STRICT');
+    assert.strictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).strictness, 'strict');
+  });
+});
+check('focus still accepts a space-separated list', () => {
+  withConfig(() => {
+    cmd('/english-coach focus article modal');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).focus, ['article', 'modal']);
+  });
+});
+check('stats --recent is a flag, not a category', () => {
+  const out = cmd('/english-coach stats --recent 30');
+  assert.ok(!/범주 '30'/.test(out), "the flag's argument must not read as a category");
+});
+check('stats rejects a non-numeric --recent instead of printing everything', () => {
+  assert.match(cmd('/english-coach stats --recent abc'), /--recent needs a positive whole number/);
+  assert.match(cmd('/english-coach stats --recent'), /got nothing/);
+});
+check('mixed_mode: correct does not claim a Korean prompt is English', () => {
+  const ko = '한국어로 아주 길게 쓴 프롬프트입니다. 이 문장은 한글 글자 수가 문턱을 넘길 만큼 충분히 길어서 기본 설정에서는 mixed 판정을 받습니다.';
+  const out = context(execFileSync(process.execPath, [path.join(__dirname, 'prompt-submit.js')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: ko }),
+    env: { ...process.env, XDG_CONFIG_HOME: sandbox, ENGLISH_COACH_MIXED_MODE: 'correct' },
+    encoding: 'utf8',
+  }));
+  assert.ok(out, 'mixed_mode: correct must still emit a correction context');
+  assert.ok(!/this prompt is in English/.test(out), 'the gate measured it as NOT English');
+});
+check('an unwritable config is reported, not swallowed into silence', () => {
+  // Silence is what the command file tells the model means "hooks not running",
+  // so a disk error would be reported to the user as a broken install.
+  const notADir = path.join(sandbox, 'blocker');
+  fs.writeFileSync(notADir, 'x');
+  const out = context(execFileSync(process.execPath, [path.join(__dirname, 'prompt-submit.js')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '/english-coach strictness loose' }),
+    env: { ...process.env, XDG_CONFIG_HOME: notADir },
+    encoding: 'utf8',
+  }));
+  assert.match(out, /could not write/);
+  assert.match(out, /not a broken install/);
+});
+check('a neighbouring /english-* command is not hijacked', () => {
+  for (const p of ['/english-teacher help me', '/english-coachx hello', '/english-coach-extra x']) {
+    assert.strictEqual(cmd(p), '', `${p} must not reach english-coach`);
+  }
+});
+check('null and empty thresholds are rejected, not read as 0', () => {
+  withConfig(() => {
+    fs.writeFileSync(cfgPath, JSON.stringify({ min_en_words: null, min_en_ratio: null }));
+    const cfg = config.load();
+    assert.strictEqual(cfg.min_en_words, 8, 'null must not become 0');
+    assert.strictEqual(cfg.min_en_ratio, 0.6);
+    assert.strictEqual(classify('ok', cfg).verdict, 'skip');
+  });
+  for (const bad of [null, false, [], '', '  ', {}]) {
+    assert.strictEqual(config.coerce('min_en_words', bad).ok, false, `${JSON.stringify(bad)} must be rejected`);
+  }
+});
+check('a rejected env var is named in status', () => {
+  const out = context(execFileSync(process.execPath, [path.join(__dirname, 'prompt-submit.js')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: '/english-coach status' }),
+    env: { ...process.env, XDG_CONFIG_HOME: sandbox, ENGLISH_COACH_STRICTNESS: 'strictt' },
+    encoding: 'utf8',
+  }));
+  assert.match(out, /ENGLISH_COACH_STRICTNESS was REJECTED/);
+});
+check('overwriting an unreadable config says so', () => {
+  withConfig(() => {
+    fs.writeFileSync(cfgPath, '{"strictness": "loose",,}');
+    assert.match(cmd('/english-coach max_items 2'), /config file was unreadable and has been replaced/);
+  });
+});
+
+console.log('\nsession-start (as a process)');
+check('the gap alert fires end to end', () => {
+  // The README calls this the point of the plugin, and it had no coverage
+  // outside gap() in isolation.
+  const stale = path.join(sandbox, 'stale.jsonl');
+  const old = new Date(Date.now() - 34 * 86400000).toISOString().slice(0, 10);
+  fs.writeFileSync(stale, JSON.stringify({ schemaVersion: ledger.SCHEMA_VERSION, date: old, kind: 'correct', cat: 'modal', wrong: 'w', right: 'r', rule: 'x', note: '' }) + '\n');
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'session-start.js')], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }),
+    env: { ...process.env, XDG_CONFIG_HOME: sandbox, ENGLISH_COACH_LOG_PATH: stale },
+    encoding: 'utf8',
+  });
+  const ctx = JSON.parse(out).hookSpecificOutput.additionalContext;
+  assert.match(ctx, /GAP ALERT/);
+  assert.match(ctx, new RegExp(`no entry since ${old}`));
+  assert.match(ctx, /34 days/);
+});
+check('an unreadable ledger is not reported as empty', () => {
+  const broken = path.join(sandbox, 'broken.jsonl');
+  fs.writeFileSync(broken, 'not json at all\n{half written');
+  const out = execFileSync(process.execPath, [path.join(__dirname, 'session-start.js')], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }),
+    env: { ...process.env, XDG_CONFIG_HOME: sandbox, ENGLISH_COACH_LOG_PATH: broken },
+    encoding: 'utf8',
+  });
+  const ctx = JSON.parse(out).hookSpecificOutput.additionalContext;
+  assert.match(ctx, /LEDGER UNREADABLE/);
+  assert.ok(!/ledger is empty/.test(ctx), 'saying "empty" here is the opposite of the truth');
+});
+check('the gap check reads the tail, not the whole ledger', () => {
+  // Append-only means this file grows forever; the startup hook must not scale
+  // with its length.
+  const big = path.join(sandbox, 'big.jsonl');
+  const line = JSON.stringify({ schemaVersion: ledger.SCHEMA_VERSION, date: '2020-01-01', kind: 'correct', cat: 'modal', wrong: 'w'.repeat(200), right: 'r', rule: 'x', note: '' });
+  const newest = JSON.stringify({ schemaVersion: ledger.SCHEMA_VERSION, date: '2026-01-31', kind: 'correct', cat: 'modal', wrong: 'w', right: 'r', rule: 'x', note: '' });
+  fs.writeFileSync(big, Array(5000).fill(line).join('\n') + '\n' + newest + '\n');
+  assert.ok(fs.statSync(big).size > 64 * 1024, 'fixture must exceed the tail window');
+  assert.strictEqual(ledger.lastDateFromTail(big).last, '2026-01-31');
+  const missing = ledger.lastDateFromTail(path.join(sandbox, 'nope.jsonl'));
+  assert.strictEqual(missing.exists, false);
+});
+
+check('stdin is decoded across chunk boundaries', () => {
+  // A Hangul syllable split across two pipe writes becomes U+FFFD if each
+  // Buffer is stringified on its own, changing the count that decides `mixed`.
+  const ko = '한국어로 아주 길게 쓴 프롬프트입니다. 이 문장은 한글 글자 수가 문턱을 넘길 만큼 충분히 길어서 기본 설정에서는 mixed 판정을 받습니다.';
+  const payload = Buffer.from(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: ko }), 'utf8');
+  const { spawnSync } = require('child_process');
+  // Split mid-payload; with 3-byte syllables a byte-aligned cut lands inside one.
+  const cut = Math.floor(payload.length / 2);
+  const res = spawnSync(process.execPath, ['-e', `
+    const { spawn } = require('child_process');
+    const c = spawn(process.execPath, [${JSON.stringify(path.join(__dirname, 'prompt-submit.js'))}],
+      { env: { ...process.env, XDG_CONFIG_HOME: ${JSON.stringify(sandbox)} }, stdio: ['pipe', 'inherit', 'inherit'] });
+    const b = Buffer.from(${JSON.stringify(payload.toString('base64'))}, 'base64');
+    c.stdin.write(b.subarray(0, ${cut}));
+    setTimeout(() => c.stdin.end(b.subarray(${cut})), 20);
+  `], { encoding: 'utf8' });
+  assert.ok(!/�/.test(res.stdout), 'a split multi-byte character was replaced');
+  assert.match(res.stdout, /ENGLISH-COACH/, 'the split payload must still parse');
+});
+
+check('every export is read by some other file', () => {
+  // Counting a name across all files including the one that defines it passes
+  // even when nothing imports it. Look only at the other files.
+  const dir = __dirname;
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.js'));
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    const m = src.match(/module\.exports = \{([^}]*)\}/);
+    if (!m) continue;
+    const names = m[1].split(',').map(x => x.split(':')[0].trim()).filter(Boolean);
+    const others = files.filter(o => o !== f)
+      .map(o => fs.readFileSync(path.join(dir, o), 'utf8')).join('\n');
+    for (const name of names) {
+      assert.ok(new RegExp(`\\b${name}\\b`).test(others),
+        `${f} exports ${name}, which no other file reads`);
+    }
+  }
 });
 
 // ---- packaging -----------------------------------------------------------
@@ -265,7 +448,6 @@ check('no shipped file carries an invisible U+FEFF', () => {
 check('nothing ships an absolute home path or an internal name', () => {
   const leak = /\/Users\/|\/home\/[a-z]/;
   for (const f of walkFiles()) {
-    if (path.basename(f) === 'test.js') continue; // the sandbox assertions live here
     const body = fs.readFileSync(f, 'utf8');
     assert.ok(!leak.test(body), `${path.relative(root, f)} contains an absolute home path`);
   }
